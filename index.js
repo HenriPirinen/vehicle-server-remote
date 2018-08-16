@@ -31,27 +31,28 @@ clientMQTT.on('message', (topic, message) => {
 				let measurementUUID = uuid();
 				let result = analyse(telemetry.group[i].voltage[i], telemetry.group[i].temperature[i]);
 
-				insertQuery += "INSERT INTO measurement (uuid, clock, cell_id) \
-								VALUES ('" + measurementUUID + "', NOW(), " + cellID + "); \
+				insertQuery += `INSERT INTO measurement (uuid, clock, cell_id) \
+								VALUES ('${measurementUUID}', NOW(), ${cellID}); \
 								INSERT INTO voltage (uuid, measured_voltage, is_voltage_ok, measurement_id) \
-								VALUES ('" + uuid() + "', " + telemetry.group[i].voltage[i] + ", " + (result.voltage === null ? true : false) + ", '" + measurementUUID + "'); \
+								VALUES ('${uuid()}', ${telemetry.group[i].voltage[i]}, ${(result.voltage === null ? true : false)}, '${measurementUUID}'); \
 								INSERT INTO temperature (uuid, measured_temp, is_temp_ok, measurement_id) \
-								VALUES ('" + uuid() + "', " + telemetry.group[i].temperature[i] + ", " + (result.temperature === null ? true : false) + ", '" + measurementUUID + "');";
+								VALUES ('${uuid()}', ${telemetry.group[i].temperature[i]}, ${(result.temperature === null ? true : false)}, '${measurementUUID}');`;
 
 				if(result.voltage != null || result.temperature != null){
 					let logMsg;
 					if(result.voltage != null) logMsg += result.voltage;
 					if(result.temperature != null) logMsg += result.temperature;
 					
-					insertQuery += "INSERT INTO log (uuid, error_msg, cleared, measurement_uuid) \
-					VALUES ('" + uuid() + "', '" + logMsg + "', false, '" + measurementUUID + "');";
+					insertQuery += `INSERT INTO log (uuid, error_msg, cleared, measurement_uuid) \
+					VALUES ('${uuid()}', '${logMsg}', false, '${measurementUUID}');`;
 				}
 			}
 		}
 
 		pool.query(insertQuery, (err, res) => {
-			console.log(res);
-			console.log(err);
+			if(err){
+				console.log(err);
+			}
 		});
 	}
 });
@@ -66,31 +67,37 @@ var server = app.listen(4000, () => { //Start server
 var io = socket(server);
 
 io.on('connection', (socket) => {
-	socket.emit('webSocket', {		//Send notification to new client 
-		message: 'WebSocket connected!',
-		handle: 'Server'
-	});
-
-	socket.on('command', (data) => { //Write command to arduino via USB
-
+	socket.on('command', (data) => { //Commands from remote user to vehicle server
 		switch (data.target) {
 			case "controller_1":
-				//TODO
+				console.log("Command to controller 1");
+				clientMQTT.publish('vehicleExternalCommand', data);
 				break;
 			case "controller_2":
-				//TODO
+				console.log("Command to controller 2");
+				clientMQTT.publish('vehicleExternalCommand', data);
 				break;
 			case "inverter":
-				//TODO
 				console.log("Command to inverter");
+				clientMQTT.publish('vehicleExternalCommand', data);
 				break;
 			case "server":
 				console.log("Command to server");
+				clientMQTT.publish('vehicleExternalCommand', data);
 				break;
 			default:
 				console.log("Invalid target");
 		}
 	});
+	socket.on('requestData', (req) => {
+		let query = ""; //Build query
+
+		pool.query(query, (err, res) => {
+			//Parse result and send it to remote client via websocket
+			if(err) console.log(err);
+			console.log(res);
+		});
+	})
 });
 
 var validateJSON = (string) => { //Validate JSON string
@@ -105,25 +112,20 @@ var validateJSON = (string) => { //Validate JSON string
 
 var uploadData = () => {
 	clientMQTT.publish('vehicleExternalCommand', '$commandFromRemote');
-	//TODO: commands -> L64
 }
 
 var analyse = (voltage, temperature) => {
 	let errorMsg = {'voltage':null,'temperature':null};
 
 	if(voltage > 3.80 || voltage < 2.75){
-		if(voltage > 3.80) errorMsg.voltage = 'WARNING: HIGH VOLTAGE ( ' + voltage + 'V ). ';
-		if(voltage < 2.75) errorMsg.voltage = 'WARNING: LOW VOLTAGE ( ' + voltage + 'V ). ';
-		//console.log('Found something!');
+		if(voltage > 3.80) errorMsg.voltage = `WARNING: HIGH VOLTAGE ( ${voltage}V ). `;
+		if(voltage < 2.75) errorMsg.voltage = `WARNING: LOW VOLTAGE ( ${voltage}V ). `;
 	}
 
 	if(temperature > 90 || temperature < 0){
-		if(temperature > 90) errorMsg.temperature = 'WARNING: HIGH TEMPERATURE ( ' + temperature + 'C ). ';
-		if(temperature < 0) errorMsg.temperature = 'WARNING: LOW TEMPERATURE ( ' + temperature + 'C ). ';
-		//console.log('Found something!');
+		if(temperature > 90) errorMsg.temperature = `WARNING: HIGH TEMPERATURE ( ${temperature}C ). `;
+		if(temperature < 0) errorMsg.temperature = `WARNING: LOW TEMPERATURE ( ${temperature}C ). `;
 	}
 
 	return errorMsg;
 }
-
-setInterval(uploadData, 5000);
