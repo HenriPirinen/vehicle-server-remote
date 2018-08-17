@@ -38,11 +38,11 @@ clientMQTT.on('message', (topic, message) => {
 								INSERT INTO temperature (uuid, measured_temp, is_temp_ok, measurement_id) \
 								VALUES ('${uuid()}', ${telemetry.group[i].temperature[i]}, ${(result.temperature === null ? true : false)}, '${measurementUUID}');`;
 
-				if(result.voltage != null || result.temperature != null){
+				if (result.voltage != null || result.temperature != null) {
 					let logMsg;
-					if(result.voltage != null) logMsg += result.voltage;
-					if(result.temperature != null) logMsg += result.temperature;
-					
+					if (result.voltage != null) logMsg += result.voltage;
+					if (result.temperature != null) logMsg += result.temperature;
+
 					insertQuery += `INSERT INTO log (uuid, error_msg, cleared, measurement_uuid) \
 					VALUES ('${uuid()}', '${logMsg}', false, '${measurementUUID}');`;
 				}
@@ -50,7 +50,7 @@ clientMQTT.on('message', (topic, message) => {
 		}
 
 		pool.query(insertQuery, (err, res) => {
-			if(err){
+			if (err) {
 				console.log(err);
 			}
 		});
@@ -90,13 +90,28 @@ io.on('connection', (socket) => {
 		}
 	});
 	socket.on('requestData', (req) => {
-		let query = ""; //Build query
+		for (let i = 0; i <= 9; i++) {
+			let query = `SELECT extract(epoch from me.clock), me.cell_id, vo.measured_voltage, te.measured_temp
+			FROM measurement me
+			FULL OUTER JOIN voltage vo
+			ON me.uuid = vo.measurement_id
+			FULL OUTER JOIN temperature te
+			ON me.uuid = te.measurement_id
+			WHERE me.cell_id = ${i}
+			AND me.clock BETWEEN '${req.sDate}'
+			AND '${req.eDate}';`;
 
-		pool.query(query, (err, res) => {
-			//Parse result and send it to remote client via websocket
-			if(err) console.log(err);
-			console.log(res);
-		});
+			pool.query(query, (err, res) => {
+				//Parse result and send it to remote client via websocket
+
+				if (err) console.log(err);
+				console.log(res.rows[0]);
+				/*socket.emit('dataset', {
+					message: '{"test":"data"}',
+					handle: 'Remote Server'
+				});*/
+			});
+		}
 	})
 });
 
@@ -115,16 +130,16 @@ var uploadData = () => {
 }
 
 var analyse = (voltage, temperature) => {
-	let errorMsg = {'voltage':null,'temperature':null};
+	let errorMsg = { 'voltage': null, 'temperature': null };
 
-	if(voltage > 3.80 || voltage < 2.75){
-		if(voltage > 3.80) errorMsg.voltage = `WARNING: HIGH VOLTAGE ( ${voltage}V ). `;
-		if(voltage < 2.75) errorMsg.voltage = `WARNING: LOW VOLTAGE ( ${voltage}V ). `;
+	if (voltage > 3.80 || voltage < 2.75) {
+		if (voltage > 3.80) errorMsg.voltage = `WARNING: HIGH VOLTAGE ( ${voltage}V ). `;
+		if (voltage < 2.75) errorMsg.voltage = `WARNING: LOW VOLTAGE ( ${voltage}V ). `;
 	}
 
-	if(temperature > 90 || temperature < 0){
-		if(temperature > 90) errorMsg.temperature = `WARNING: HIGH TEMPERATURE ( ${temperature}C ). `;
-		if(temperature < 0) errorMsg.temperature = `WARNING: LOW TEMPERATURE ( ${temperature}C ). `;
+	if (temperature > 90 || temperature < 0) {
+		if (temperature > 90) errorMsg.temperature = `WARNING: HIGH TEMPERATURE ( ${temperature}C ). `;
+		if (temperature < 0) errorMsg.temperature = `WARNING: LOW TEMPERATURE ( ${temperature}C ). `;
 	}
 
 	return errorMsg;
