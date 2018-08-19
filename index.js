@@ -90,28 +90,54 @@ io.on('connection', (socket) => {
 		}
 	});
 	socket.on('requestData', (req) => {
-		for (let i = 0; i <= 9; i++) {
-			let query = `SELECT extract(epoch from me.clock), me.cell_id, vo.measured_voltage, te.measured_temp
+		let query = () => {
+			let sqlQuery = `SELECT extract(epoch from me.clock), me.cell_id, vo.measured_voltage, te.measured_temp
 			FROM measurement me
 			FULL OUTER JOIN voltage vo
 			ON me.uuid = vo.measurement_id
 			FULL OUTER JOIN temperature te
 			ON me.uuid = te.measurement_id
-			WHERE me.cell_id = ${i}
+			WHERE me.cell_id = 0
 			AND me.clock BETWEEN '${req.sDate}'
-			AND '${req.eDate}';`;
+			AND '${req.eDate}'`;
 
-			pool.query(query, (err, res) => {
-				//Parse result and send it to remote client via websocket
+			for(let i = 1; i <= 72; i++){
+				let txt = `SELECT extract(epoch from me.clock), me.cell_id, vo.measured_voltage, te.measured_temp
+				FROM measurement me
+				FULL OUTER JOIN voltage vo
+				ON me.uuid = vo.measurement_id
+				FULL OUTER JOIN temperature te
+				ON me.uuid = te.measurement_id
+				WHERE me.cell_id = ${i}
+				AND me.clock BETWEEN '${req.sDate}'
+				AND '${req.eDate}'`;
 
-				if (err) console.log(err);
-				console.log(res.rows[0]);
-				/*socket.emit('dataset', {
-					message: '{"test":"data"}',
-					handle: 'Remote Server'
-				});*/
-			});
+				sqlQuery += ` UNION ${txt}`; 
+			}
+
+			return sqlQuery;
 		}
+
+		pool.query(query(), (err, res) => {
+			let initArray = new Array(10);
+			for(let i = 0; i < initArray.length; i++){
+				initArray[i] = new Array(9);
+				for(let cell = 0; cell < initArray[i].length; cell++){
+					initArray[i][cell] = [];
+				}
+			}
+			if (err) console.log(err);
+			for(let item of res.rows){
+				let group = Math.floor(item.cell_id / 8);
+				let cellIdx = ((item.cell_id / 8) - (Math.floor(item.cell_id / 8))) / 0.125;
+				initArray[group][cellIdx].push(`${JSON.stringify({voltage: item.measured_voltage, temperature: item.measured_temp, time: Math.round(item.date_part)})}`);
+			}
+			let response = {"data": initArray};
+			socket.emit('dataset', {
+				message: JSON.stringify(response),
+				handle: 'Remote Server'
+			});
+		});
 	})
 });
 
