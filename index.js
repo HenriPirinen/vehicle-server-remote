@@ -4,6 +4,32 @@ const socket = require('socket.io');
 const mqtt = require('mqtt');
 const pg = require('pg');
 const uuid = require('uuid/v1');
+const nodemailer = require('nodemailer');
+
+let authToken = ""; //Use this token for logging in. Not the most elegant solution. Updates every minute
+let loggingEnabled = false;
+let timeout;
+
+let transporter = nodemailer.createTransport({
+	service: 'gmail',
+	secure: false,
+	port: 25,
+	auth: {
+		user: keys.email.username,
+		pass: keys.email.password
+	},
+	tls: {
+	  rejectUnauthorized: false
+	}
+  });
+
+  transporter.verify(function(error, success) {
+	if (error) {
+		 console.log(error);
+	} else {
+		 console.log('Server is ready to take our messages');
+	}
+ });
 
 const pool = new pg.Pool({
 	user: keys.db.dbUser,
@@ -59,6 +85,38 @@ clientMQTT.on('message', (topic, message) => {
 
 
 var app = express();
+
+app.get('/token', (req, res) => {
+	authToken = Math.random().toString(36).slice(2);
+	clearTimeout(timeout);
+	var mailOptions = {
+		from: 'regniremote@gmail.com',
+		to: 'henripirinen@hotmail.fi',
+		subject: 'Logging token',
+		text: `Your logging token: ${authToken}`
+	  };
+
+	transporter.sendMail(mailOptions, function(error, response){
+        if(error){
+            console.log(error);
+        }else{
+            console.log("Ok");
+        }
+	});
+	loggingEnabled = true;
+	timeout = setTimeout(function(){loggingEnabled = false;}, 60000); //Client need to login within one minute.
+	res.end("Token send to email");
+});
+
+app.get('/verifyToken/:token', (req, res) => {
+	if(req.params.token === authToken && loggingEnabled){
+		loggingEnabled = false;
+		res.end("Succesfull");
+	} else {
+		res.end("Invalid token");
+	}
+});
+
 var server = app.listen(4000, () => { //Start server
 	console.log("Listening port 4000 @ localhost")
 	console.log("MQTT is subscribed to 'vehicleData & vehicleExternalCommand'");
@@ -140,6 +198,8 @@ io.on('connection', (socket) => {
 		});
 	})
 });
+
+
 
 var validateJSON = (string) => { //Validate JSON string
 	try {
