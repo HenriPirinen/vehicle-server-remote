@@ -6,6 +6,11 @@ const pg = require('pg');
 const uuid = require('uuid/v1');
 const nodemailer = require('nodemailer');
 
+//https://stackoverflow.com/questions/18739725/how-to-know-if-user-is-logged-in-with-passport-js
+//https://stackoverflow.com/questions/38042610/how-to-send-user-to-another-page-after-login-node-js/38042681
+//https://medium.freecodecamp.org/how-to-make-create-react-app-work-with-a-node-backend-api-7c5c48acb1b0
+//https://www.youtube.com/results?search_query=passport+js
+
 let authToken = ""; //Use this token for logging in. Not the most elegant solution. Updates every minute
 let loggingEnabled = false;
 let timeout;
@@ -15,21 +20,21 @@ let transporter = nodemailer.createTransport({
 	secure: false,
 	port: 25,
 	auth: {
-		user: keys.email.username,
-		pass: keys.email.password
+		user: keys.email.myUsername,
+		pass: keys.email.myPassword
 	},
 	tls: {
-	  rejectUnauthorized: false
+		rejectUnauthorized: false
 	}
-  });
+});
 
-  transporter.verify(function(error, success) {
+transporter.verify(function (error, success) {
 	if (error) {
-		 console.log(error);
+		console.log(error);
 	} else {
-		 console.log('Server is ready to take our messages');
+		console.log('Server is ready to take our messages');
 	}
- });
+});
 
 const pool = new pg.Pool({
 	user: keys.db.dbUser,
@@ -83,48 +88,52 @@ clientMQTT.on('message', (topic, message) => {
 	}
 });
 
-
 var app = express();
-
-app.get('/token', (req, res) => {
-	authToken = Math.random().toString(36).slice(2);
-	clearTimeout(timeout);
-	var mailOptions = {
-		from: 'regniremote@gmail.com',
-		to: 'henripirinen@hotmail.fi',
-		subject: 'Logging token',
-		text: `Your logging token: ${authToken}`
-	  };
-
-	transporter.sendMail(mailOptions, function(error, response){
-        if(error){
-            console.log(error);
-        }else{
-            console.log("Ok");
-        }
-	});
-	loggingEnabled = true;
-	timeout = setTimeout(function(){loggingEnabled = false;}, 60000); //Client need to login within one minute.
-	res.end("Token send to email");
-});
-
-app.get('/verifyToken/:token', (req, res) => {
-	if(req.params.token === authToken && loggingEnabled){
-		loggingEnabled = false;
-		res.end("Succesfull");
-	} else {
-		res.end("Invalid token");
-	}
-});
-
 var server = app.listen(4000, () => { //Start server
 	console.log("Listening port 4000 @ localhost")
 	console.log("MQTT is subscribed to 'vehicleData & vehicleExternalCommand'");
 });
 
 var io = socket(server);
-
 io.on('connection', (socket) => {
+	console.log(socket.request.connection.remoteAddress);
+
+	socket.on('authToken', (payload) => { //Send session token to client. Token is required for sending requests to the server.
+		if (!loggingEnabled && payload.action === 'request') {
+			authToken = Math.random().toString(36).slice(2);
+			clearTimeout(timeout);
+			let mailOptions = {
+				from: keys.email.myUsername,
+				to: keys.email.clientEmail,
+				subject: 'Logging token',
+				html: `Your logging token: <b>${authToken}</b>
+					<br><br><br><br>If you didn't request logging token, click the link below to block unauthorized client.
+					<a href="https://192.168.137.91/${authToken}/block/${socket.request.connection.remoteAddress}">Block ${socket.request.connection.remoteAddress}</a>`
+			};
+
+			transporter.sendMail(mailOptions, function (error, response) {
+				if (error) {
+					console.log(error);
+				} else {
+					console.log("Ok");
+				}
+			});
+			loggingEnabled = true;
+			timeout = setTimeout(function () { loggingEnabled = false; }, 60000); //Client need to login within one minute.
+		} else if (loggingEnabled && payload.action === 'verify') {
+			if (payload.token === authToken) {
+				loggingEnabled = false;
+				socket.emit('authToken', {
+					success: true
+				});
+			}
+		} else {
+			socket.emit('authToken', {
+				success: false
+			});
+		}
+	});
+
 	socket.on('command', (data) => { //Commands from remote user to vehicle server
 		switch (data.target) {
 			case "controller_1":
@@ -133,10 +142,6 @@ io.on('connection', (socket) => {
 				break;
 			case "controller_2":
 				console.log("Command to controller 2");
-				clientMQTT.publish('vehicleExternalCommand', data);
-				break;
-			case "inverter":
-				console.log("Command to inverter");
 				clientMQTT.publish('vehicleExternalCommand', data);
 				break;
 			case "server":
@@ -159,7 +164,7 @@ io.on('connection', (socket) => {
 			AND me.clock BETWEEN '${req.sDate}'
 			AND '${req.eDate}'`;
 
-			for(let i = 1; i <= 72; i++){
+			for (let i = 1; i <= 72; i++) {
 				let txt = `SELECT extract(epoch from me.clock), me.cell_id, vo.measured_voltage, te.measured_temp
 				FROM measurement me
 				FULL OUTER JOIN voltage vo
@@ -170,7 +175,7 @@ io.on('connection', (socket) => {
 				AND me.clock BETWEEN '${req.sDate}'
 				AND '${req.eDate}'`;
 
-				sqlQuery += ` UNION ${txt}`; 
+				sqlQuery += ` UNION ${txt}`;
 			}
 
 			return sqlQuery;
@@ -178,19 +183,19 @@ io.on('connection', (socket) => {
 
 		pool.query(query(), (err, res) => {
 			let initArray = new Array(10);
-			for(let i = 0; i < initArray.length; i++){
+			for (let i = 0; i < initArray.length; i++) {
 				initArray[i] = new Array(9);
-				for(let cell = 0; cell < initArray[i].length; cell++){
+				for (let cell = 0; cell < initArray[i].length; cell++) {
 					initArray[i][cell] = [];
 				}
 			}
 			if (err) console.log(err);
-			for(let item of res.rows){
+			for (let item of res.rows) {
 				let group = Math.floor(item.cell_id / 8);
 				let cellIdx = ((item.cell_id / 8) - (Math.floor(item.cell_id / 8))) / 0.125;
-				initArray[group][cellIdx].push(`${JSON.stringify({voltage: item.measured_voltage, temperature: item.measured_temp, time: Math.round(item.date_part)})}`);
+				initArray[group][cellIdx].push(`${JSON.stringify({ voltage: item.measured_voltage, temperature: item.measured_temp, time: Math.round(item.date_part) })}`);
 			}
-			let response = {"data": initArray};
+			let response = { "data": initArray };
 			socket.emit('dataset', {
 				message: JSON.stringify(response),
 				handle: 'Remote Server'
