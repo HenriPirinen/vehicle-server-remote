@@ -6,11 +6,6 @@ const pg = require('pg');
 const uuid = require('uuid/v1');
 const nodemailer = require('nodemailer');
 
-//https://stackoverflow.com/questions/18739725/how-to-know-if-user-is-logged-in-with-passport-js
-//https://stackoverflow.com/questions/38042610/how-to-send-user-to-another-page-after-login-node-js/38042681
-//https://medium.freecodecamp.org/how-to-make-create-react-app-work-with-a-node-backend-api-7c5c48acb1b0
-//https://www.youtube.com/results?search_query=passport+js
-
 let authToken = ""; //Use this token for logging in. Not the most elegant solution. Updates every minute
 let loggingEnabled = false;
 let timeout;
@@ -33,7 +28,7 @@ transporter.verify(function (error, success) {
 		console.log(error);
 	} else {
 		console.log('Server is ready to take our messages');
-	}
+	};
 });
 
 const pool = new pg.Pool({
@@ -44,7 +39,7 @@ const pool = new pg.Pool({
 	port: keys.db.dbPort
 });
 
-var clientMQTT = mqtt.connect(keys.address.mqtt);
+var clientMQTT = mqtt.connect(keys.address.mqtt, keys.mqttOptions);
 
 clientMQTT.on('connect', () => {
 	clientMQTT.subscribe('vehicleData');
@@ -52,6 +47,7 @@ clientMQTT.on('connect', () => {
 });
 
 clientMQTT.on('message', (topic, message) => {
+	console.log('New data!');
 	if (topic !== 'vehicleExternalCommand') {
 		let telemetry = JSON.parse(message.toString());
 		let cellID = 0;
@@ -83,14 +79,14 @@ clientMQTT.on('message', (topic, message) => {
 		pool.query(insertQuery, (err, res) => {
 			if (err) {
 				console.log(err);
-			}
+			};
 		});
-	}
+	};
 });
 
 var app = express();
 var server = app.listen(4000, () => { //Start server
-	console.log("Listening port 4000 @ localhost")
+	console.log("Listening port 4000 @ localhost");
 	console.log("MQTT is subscribed to 'vehicleData & vehicleExternalCommand'");
 });
 
@@ -126,82 +122,66 @@ io.on('connection', (socket) => {
 				socket.emit('authToken', {
 					success: true
 				});
-			}
+			};
 		} else {
 			socket.emit('authToken', {
 				success: false
 			});
-		}
+		};
 	});
 
-	socket.on('command', (data) => { //Commands from remote user to vehicle server
-		switch (data.target) {
-			case "controller_1":
-				console.log("Command to controller 1");
-				clientMQTT.publish('vehicleExternalCommand', data);
-				break;
-			case "controller_2":
-				console.log("Command to controller 2");
-				clientMQTT.publish('vehicleExternalCommand', data);
-				break;
-			case "server":
-				console.log("Command to server");
-				clientMQTT.publish('vehicleExternalCommand', data);
-				break;
-			default:
-				console.log("Invalid target");
-		}
-	});
 	socket.on('requestData', (req) => {
-		let query = () => {
-			let sqlQuery = `SELECT extract(epoch from me.clock), me.cell_id, vo.measured_voltage, te.measured_temp
-			FROM measurement me
-			FULL OUTER JOIN voltage vo
-			ON me.uuid = vo.measurement_id
-			FULL OUTER JOIN temperature te
-			ON me.uuid = te.measurement_id
-			WHERE me.cell_id = 0
-			AND me.clock BETWEEN '${req.sDate}'
-			AND '${req.eDate}'`;
-
-			for (let i = 1; i <= 72; i++) {
-				let txt = `SELECT extract(epoch from me.clock), me.cell_id, vo.measured_voltage, te.measured_temp
+		if (req.token === authToken) {
+			let query = () => {
+				let sqlQuery = `SELECT extract(epoch from me.clock), me.cell_id, vo.measured_voltage, te.measured_temp
 				FROM measurement me
 				FULL OUTER JOIN voltage vo
 				ON me.uuid = vo.measurement_id
 				FULL OUTER JOIN temperature te
 				ON me.uuid = te.measurement_id
-				WHERE me.cell_id = ${i}
+				WHERE me.cell_id = 0
 				AND me.clock BETWEEN '${req.sDate}'
 				AND '${req.eDate}'`;
 
-				sqlQuery += ` UNION ${txt}`;
-			}
+				for (let i = 1; i <= 72; i++) {
+					let txt = `SELECT extract(epoch from me.clock), me.cell_id, vo.measured_voltage, te.measured_temp
+					FROM measurement me
+					FULL OUTER JOIN voltage vo
+					ON me.uuid = vo.measurement_id
+					FULL OUTER JOIN temperature te
+					ON me.uuid = te.measurement_id
+					WHERE me.cell_id = ${i}
+					AND me.clock BETWEEN '${req.sDate}'
+					AND '${req.eDate}'`;
 
-			return sqlQuery;
-		}
+					sqlQuery += ` UNION ${txt}`;
+				};
 
-		pool.query(query(), (err, res) => {
-			let initArray = new Array(10);
-			for (let i = 0; i < initArray.length; i++) {
-				initArray[i] = new Array(9);
-				for (let cell = 0; cell < initArray[i].length; cell++) {
-					initArray[i][cell] = [];
+				return sqlQuery;
+			};
+
+			pool.query(query(), (err, res) => {
+				let initArray = new Array(10);
+				for (let i = 0; i < initArray.length; i++) {
+					initArray[i] = new Array(8);
+					for (let cell = 0; cell < initArray[i].length; cell++) {
+						initArray[i][cell] = [];
+					};
+				};
+				if (err) console.log(err);
+				for (let item of res.rows) {
+					let group = Math.floor(item.cell_id / 8);
+					let cellIdx = ((item.cell_id / 8) - (Math.floor(item.cell_id / 8))) / 0.125;
+					initArray[group][cellIdx].push(`${JSON.stringify({ voltage: parseInt(item.measured_voltage), temperature: parseInt(item.measured_temp), time: Math.round(item.date_part) })}`);
 				}
-			}
-			if (err) console.log(err);
-			for (let item of res.rows) {
-				let group = Math.floor(item.cell_id / 8);
-				let cellIdx = ((item.cell_id / 8) - (Math.floor(item.cell_id / 8))) / 0.125;
-				initArray[group][cellIdx].push(`${JSON.stringify({ voltage: item.measured_voltage, temperature: item.measured_temp, time: Math.round(item.date_part) })}`);
-			}
-			let response = { "data": initArray };
-			socket.emit('dataset', {
-				message: JSON.stringify(response),
-				handle: 'Remote Server'
+				let response = { "data": initArray };
+				socket.emit('dataset', {
+					message: JSON.stringify(response),
+					handle: 'Remote Server'
+				});
 			});
-		});
-	})
+		};
+	});
 });
 
 
@@ -212,13 +192,13 @@ var validateJSON = (string) => { //Validate JSON string
 	} catch (e) {
 		console.log(e);
 		return false;
-	}
+	};
 	return true;
-}
+};
 
 var uploadData = () => {
 	clientMQTT.publish('vehicleExternalCommand', '$commandFromRemote');
-}
+};
 
 var analyse = (voltage, temperature) => {
 	let errorMsg = { 'voltage': null, 'temperature': null };
@@ -226,12 +206,12 @@ var analyse = (voltage, temperature) => {
 	if (voltage > 3.80 || voltage < 2.75) {
 		if (voltage > 3.80) errorMsg.voltage = `WARNING: HIGH VOLTAGE ( ${voltage}V ). `;
 		if (voltage < 2.75) errorMsg.voltage = `WARNING: LOW VOLTAGE ( ${voltage}V ). `;
-	}
+	};
 
 	if (temperature > 90 || temperature < 0) {
 		if (temperature > 90) errorMsg.temperature = `WARNING: HIGH TEMPERATURE ( ${temperature}C ). `;
 		if (temperature < 0) errorMsg.temperature = `WARNING: LOW TEMPERATURE ( ${temperature}C ). `;
-	}
+	};
 
 	return errorMsg;
-}
+};
