@@ -1,14 +1,20 @@
 const keys = require('./keys');
 const express = require('express');
+const bodyParser = require("body-parser");
 const socket = require('socket.io');
 const mqtt = require('mqtt');
 const pg = require('pg');
 const uuid = require('uuid/v1');
 const nodemailer = require('nodemailer');
+const path = require('path');
+const cookieParser = require('cookie-parser');
+const redis = require('redis');
 
-let authToken = ""; //Use this token for logging in. Not the most elegant solution. Updates every minute
-let loggingEnabled = false;
-let timeout;
+const redisClient = redis.createClient();
+
+redisClient.on('connect', function () {
+	console.log('Redis client connected');
+})
 
 let transporter = nodemailer.createTransport({
 	service: 'gmail',
@@ -39,6 +45,14 @@ const pool = new pg.Pool({
 	port: keys.db.dbPort
 });
 
+const auth = new pg.Pool({
+	user: keys.db.dbUser,
+	host: keys.db.dbHost,
+	database: 'auth',
+	password: keys.db.dbUserPassword,
+	port: keys.db.dbPort
+});
+
 var clientMQTT = mqtt.connect(keys.address.mqtt, keys.mqttOptions);
 
 clientMQTT.on('connect', () => {
@@ -47,8 +61,8 @@ clientMQTT.on('connect', () => {
 });
 
 clientMQTT.on('message', (topic, message) => {
-	console.log('New data!');
 	if (topic !== 'vehicleExternalCommand') {
+		console.log('New data!');
 		let telemetry = JSON.parse(message.toString());
 		let cellID = 0;
 		let insertQuery = '';
@@ -87,72 +101,69 @@ clientMQTT.on('message', (topic, message) => {
 var app = express();
 var server = app.listen(4000, () => { //Start server
 	console.log("Listening port 4000 @ localhost");
-	console.log("MQTT is subscribed to 'vehicleData & vehicleExternalCommand'");
 });
 
-var io = socket(server);
-io.on('connection', (socket) => {
-	console.log(socket.request.connection.remoteAddress);
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
+app.use(cookieParser());
 
-	socket.on('authToken', (payload) => { //Send session token to client. Token is required for sending requests to the server.
-		if (!loggingEnabled && payload.action === 'request') {
-			authToken = Math.random().toString(36).slice(2);
-			clearTimeout(timeout);
-			let mailOptions = {
-				from: keys.email.myUsername,
-				to: keys.email.clientEmail,
-				subject: 'Logging token',
-				html: `Your logging token: <b>${authToken}</b>
-					<br><br><br><br>If you didn't request logging token, click the link below to block unauthorized client.
-					<a href="https://192.168.137.91/${authToken}/block/${socket.request.connection.remoteAddress}">Block ${socket.request.connection.remoteAddress}</a>`
-			};
 
-			transporter.sendMail(mailOptions, function (error, response) {
-				if (error) {
-					console.log(error);
-				} else {
-					console.log("Ok");
-				}
-			});
-			loggingEnabled = true;
-			timeout = setTimeout(function () { loggingEnabled = false; }, 60000); //Client need to login within one minute.
-		} else if (loggingEnabled && payload.action === 'verify') {
-			if (payload.token === authToken) {
-				loggingEnabled = false;
-				socket.emit('authToken', {
-					success: true
-				});
-			};
+app.use(function (req, res, next) {
+	res.header("Access-Control-Allow-Origin", "*");
+	res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+	next();
+});
+
+app.use('/webApp/', express.static(path.join(__dirname, 'webApp')));
+app.get('/*', function (req, res) {
+	res.sendFile(path.join(__dirname, 'webApp', 'index.html'));
+});
+
+app.post('/auth', function (req, res) {
+	let query = `SELECT EXISTS(
+		SELECT true 
+		FROM users
+		WHERE email = '${req.body.email}' 
+		AND password = crypt('${req.body.password}', password)
+		);`;
+
+	auth.query(query, (err, response) => {
+		if (response.rows[0].exists) {
+			let authToken = Math.random().toString(36).slice(2);
+			redisClient.set(req.body.email, authToken);
+			redisClient.expire(req.body.email, 1800); //Expire token after half hour
+
+			res.cookie('session_key', authToken, { maxAge: 1800000 }).json({ "success": true, 'key': authToken });
 		} else {
-			socket.emit('authToken', {
-				success: false
-			});
+			res.json({ 'success': false });
 		};
 	});
+});
 
-	socket.on('requestData', (req) => {
-		if (req.token === authToken) {
+app.post('/getData', function (req, response) {
+	redisClient.get(req.body.user, function (err, reply) {
+		if (reply === req.body.key) {
 			let query = () => {
 				let sqlQuery = `SELECT extract(epoch from me.clock), me.cell_id, vo.measured_voltage, te.measured_temp
-				FROM measurement me
-				FULL OUTER JOIN voltage vo
-				ON me.uuid = vo.measurement_id
-				FULL OUTER JOIN temperature te
-				ON me.uuid = te.measurement_id
-				WHERE me.cell_id = 0
-				AND me.clock BETWEEN '${req.sDate}'
-				AND '${req.eDate}'`;
-
-				for (let i = 1; i <= 72; i++) {
-					let txt = `SELECT extract(epoch from me.clock), me.cell_id, vo.measured_voltage, te.measured_temp
 					FROM measurement me
 					FULL OUTER JOIN voltage vo
 					ON me.uuid = vo.measurement_id
 					FULL OUTER JOIN temperature te
 					ON me.uuid = te.measurement_id
-					WHERE me.cell_id = ${i}
-					AND me.clock BETWEEN '${req.sDate}'
-					AND '${req.eDate}'`;
+					WHERE me.cell_id = 0
+					AND me.clock BETWEEN '${req.body.sDate}'
+					AND '${req.body.eDate}'`;
+
+				for (let i = 1; i <= 72; i++) {
+					let txt = `SELECT extract(epoch from me.clock), me.cell_id, vo.measured_voltage, te.measured_temp
+						FROM measurement me
+						FULL OUTER JOIN voltage vo
+						ON me.uuid = vo.measurement_id
+						FULL OUTER JOIN temperature te
+						ON me.uuid = te.measurement_id
+						WHERE me.cell_id = ${i}
+						AND me.clock BETWEEN '${req.body.sDate}'
+						AND '${req.body.eDate}'`;
 
 					sqlQuery += ` UNION ${txt}`;
 				};
@@ -174,17 +185,40 @@ io.on('connection', (socket) => {
 					let cellIdx = ((item.cell_id / 8) - (Math.floor(item.cell_id / 8))) / 0.125;
 					initArray[group][cellIdx].push(`${JSON.stringify({ voltage: parseInt(item.measured_voltage), temperature: parseInt(item.measured_temp), time: Math.round(item.date_part) })}`);
 				}
-				let response = { "data": initArray };
-				socket.emit('dataset', {
-					message: JSON.stringify(response),
-					handle: 'Remote Server'
-				});
+				response.json({ "data": initArray })
 			});
-		};
-	});
+		} else {
+			res.end();
+		}
+	})
 });
 
+app.post('/webasto', function (req, res) {
+	redisClient.get(req.body.user, function(err, rep){
+		if (rep === req.body.key) {
+			clientMQTT.publish('vehicleExternalCommand', req.body.command);
+			res.json({ 'success': true });
+		} else {
+			res.end();
+		}
+	})
+});
 
+app.post('/update', function (req, res) {
+	redisClient.get(req.body.user, function(err, rep){
+		if (rep === req.body.key) {
+			console.log(req.body.target);
+			res.end();
+		} else {
+			res.end();
+		}
+	})
+});
+
+var io = socket(server);
+io.on('connection', (socket) => {
+	//Possibly used in the future
+});
 
 var validateJSON = (string) => { //Validate JSON string
 	try {
