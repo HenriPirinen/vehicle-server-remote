@@ -126,7 +126,7 @@ app.post('/auth', function (req, res) {
 		WHERE email = '${req.body.email}' 
 		AND password = crypt('${req.body.password}', password)
 		);`;
-
+	
 	auth.query(query, (err, response) => {
 		if (response.rows[0].exists) {
 			let authToken = Math.random().toString(36).slice(2);
