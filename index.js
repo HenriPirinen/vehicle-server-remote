@@ -62,7 +62,7 @@ clientMQTT.on('connect', () => {
 
 clientMQTT.on('message', (topic, message) => {
 	if (topic !== 'vehicleExternalCommand') {
-		console.log('New data!');
+		console.log('Recived data over MQTT');
 		let telemetry = JSON.parse(message.toString());
 		let cellID = 0;
 		let insertQuery = '';
@@ -70,14 +70,14 @@ clientMQTT.on('message', (topic, message) => {
 		for (let x = 0; x < telemetry.group.length; x++) { //For telemetry data structure go to vehicle-server index.js. Object @ line 10.
 			for (let i = 0; i < telemetry.group[i].voltage.length; i++ , cellID++) { //Voltage & temperature array length is equal
 				let measurementUUID = uuid();
-				let result = analyse(telemetry.group[i].voltage[i], telemetry.group[i].temperature[i]);
+				let result = analyse(telemetry.group[x].voltage[i], telemetry.group[x].temperature[i]);
 
 				insertQuery += `INSERT INTO measurement (uuid, clock, cell_id) \
 								VALUES ('${measurementUUID}', NOW(), ${cellID}); \
 								INSERT INTO voltage (uuid, measured_voltage, is_voltage_ok, measurement_id) \
-								VALUES ('${uuid()}', ${telemetry.group[i].voltage[i]}, ${(result.voltage === null ? true : false)}, '${measurementUUID}'); \
+								VALUES ('${uuid()}', ${telemetry.group[x].voltage[i]}, ${(result.voltage === null ? true : false)}, '${measurementUUID}'); \
 								INSERT INTO temperature (uuid, measured_temp, is_temp_ok, measurement_id) \
-								VALUES ('${uuid()}', ${telemetry.group[i].temperature[i]}, ${(result.temperature === null ? true : false)}, '${measurementUUID}');`;
+								VALUES ('${uuid()}', ${telemetry.group[x].temperature[i]}, ${(result.temperature === null ? true : false)}, '${measurementUUID}');`;
 
 				if (result.voltage != null || result.temperature != null) {
 					let logMsg;
@@ -151,8 +151,8 @@ app.post('/getData', function (req, response) {
 					FULL OUTER JOIN temperature te
 					ON me.uuid = te.measurement_id
 					WHERE me.cell_id = 0
-					AND me.clock BETWEEN '${req.body.sDate}'
-					AND '${req.body.eDate}'`;
+					AND me.clock BETWEEN '${req.body.sDate} 00:00:00'
+					AND '${req.body.eDate} 00:00:00'`;
 
 				for (let i = 1; i <= 72; i++) {
 					let txt = `SELECT extract(epoch from me.clock), me.cell_id, vo.measured_voltage, te.measured_temp
@@ -162,8 +162,8 @@ app.post('/getData', function (req, response) {
 						FULL OUTER JOIN temperature te
 						ON me.uuid = te.measurement_id
 						WHERE me.cell_id = ${i}
-						AND me.clock BETWEEN '${req.body.sDate}'
-						AND '${req.body.eDate}'`;
+						AND me.clock BETWEEN '${req.body.sDate} 00:00:00'
+						AND '${req.body.eDate} 00:00:00'`;
 
 					sqlQuery += ` UNION ${txt}`;
 				};
@@ -172,20 +172,26 @@ app.post('/getData', function (req, response) {
 			};
 
 			pool.query(query(), (err, res) => {
-				let initArray = new Array(10);
-				for (let i = 0; i < initArray.length; i++) {
-					initArray[i] = new Array(8);
-					for (let cell = 0; cell < initArray[i].length; cell++) {
-						initArray[i][cell] = [];
+				if(!err){
+					let initArray = new Array(10);
+					for (let i = 0; i < initArray.length; i++) { //Create data array
+						initArray[i] = new Array(8);
+						for (let cell = 0; cell < initArray[i].length; cell++) {
+							initArray[i][cell] = [];
+						};
 					};
-				};
-				if (err) console.log(err);
-				for (let item of res.rows) {
-					let group = Math.floor(item.cell_id / 8);
-					let cellIdx = ((item.cell_id / 8) - (Math.floor(item.cell_id / 8))) / 0.125;
-					initArray[group][cellIdx].push(`${JSON.stringify({ voltage: parseInt(item.measured_voltage), temperature: parseInt(item.measured_temp), time: Math.round(item.date_part) })}`);
+	
+					for (let item of res.rows) { //Fill data array
+						let group = Math.floor(item.cell_id / 8); //Calculate group number
+						let cellIdx = ((item.cell_id / 8) - (Math.floor(item.cell_id / 8))) / 0.125; //Calculate cell index in group array
+						console.log(`Group ${group} -> Cell ${cellIdx} = ${item.measured_voltage}`);
+						initArray[group][cellIdx].push(`${JSON.stringify({ voltage: item.measured_voltage, temperature: item.measured_temp, time: Math.round(item.date_part) })}`);
+					}
+					response.json({ "data": initArray })
+				} else {
+					console.log(err);
+					res.end();
 				}
-				response.json({ "data": initArray })
 			});
 		} else {
 			res.end();
