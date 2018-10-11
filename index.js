@@ -9,6 +9,14 @@ const nodemailer = require('nodemailer');
 const path = require('path');
 const cookieParser = require('cookie-parser');
 const redis = require('redis');
+const https = require("https");
+const fs = require("fs");
+
+const options = {
+	key: fs.readFileSync("/etc/letsencrypt/live/chl650.net/privkey.pem"),
+	cert: fs.readFileSync("/etc/letsencrypt/live/chl650.net/cert.pem"),
+	ca: fs.readFileSync("/etc/letsencrypt/live/chl650.net/chain.pem")
+};
 
 const redisClient = redis.createClient();
 
@@ -99,14 +107,19 @@ clientMQTT.on('message', (topic, message) => {
 });
 
 var app = express();
-var server = app.listen(4000, () => { //Start server
-	console.log("Listening port 4000 @ localhost");
+/*var server = app.listen(80, () => { //Start server
+	console.log("Listening port 80 @ localhost");
+});*/
+
+var server = https.createServer(options, app).listen(443, () => {
+	console.log('Server started');
 });
 
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 app.use(cookieParser());
 
+app.use(express.static(__dirname, { dotfiles: 'allow' } ));
 
 app.use(function (req, res, next) {
 	res.header("Access-Control-Allow-Origin", "*");
@@ -123,11 +136,11 @@ app.post('/auth', function (req, res) {
 	let query = `SELECT EXISTS(
 		SELECT true 
 		FROM users
-		WHERE email = '${req.body.email}' 
-		AND password = crypt('${req.body.password}', password)
+		WHERE email = $1 
+		AND password = crypt($2, password)
 		);`;
 	
-	auth.query(query, (err, response) => {
+	auth.query(query, [`${req.body.email}`, `${req.body.password}`],(err, response) => {
 		if (response.rows[0].exists) {
 			let authToken = Math.random().toString(36).slice(2);
 			redisClient.set(req.body.email, authToken);
