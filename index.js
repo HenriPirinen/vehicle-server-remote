@@ -154,8 +154,10 @@ app.post('/auth', function (req, res) {
 });
 
 app.post('/getData', function (req, response) {
+	console.log('query');
 	redisClient.get(req.body.user, function (err, reply) {
 		if (reply === req.body.key) {
+			console.log('User OK');
 			let query = () => {
 				let sqlQuery = `SELECT extract(epoch from me.clock), me.cell_id, vo.measured_voltage, te.measured_temp
 					FROM measurement me
@@ -165,7 +167,7 @@ app.post('/getData', function (req, response) {
 					ON me.uuid = te.measurement_id
 					WHERE me.cell_id = 0
 					AND me.clock BETWEEN '${req.body.sDate} 00:00:00'
-					AND '${req.body.eDate} 00:00:00'`;
+					AND '${req.body.eDate} 23:59:59'`;
 
 				for (let i = 1; i <= 72; i++) {
 					let txt = `SELECT extract(epoch from me.clock), me.cell_id, vo.measured_voltage, te.measured_temp
@@ -176,7 +178,7 @@ app.post('/getData', function (req, response) {
 						ON me.uuid = te.measurement_id
 						WHERE me.cell_id = ${i}
 						AND me.clock BETWEEN '${req.body.sDate} 00:00:00'
-						AND '${req.body.eDate} 00:00:00'`;
+						AND '${req.body.eDate} 23:59:59'`;
 
 					sqlQuery += ` UNION ${txt}`;
 				};
@@ -187,19 +189,21 @@ app.post('/getData', function (req, response) {
 			pool.query(query(), (err, res) => {
 				if(!err){
 					let initArray = new Array(10);
-					for (let i = 0; i < initArray.length; i++) { //Create data array
+					//Create data array
+					for (let i = 0; i < initArray.length; i++) {
 						initArray[i] = new Array(8);
 						for (let cell = 0; cell < initArray[i].length; cell++) {
 							initArray[i][cell] = [];
 						};
 					};
 	
-					for (let item of res.rows) { //Fill data array
+					//Fill data array
+					for (let item of res.rows) {
 						let group = Math.floor(item.cell_id / 8); //Calculate group number
 						let cellIdx = ((item.cell_id / 8) - (Math.floor(item.cell_id / 8))) / 0.125; //Calculate cell index in group array
-						console.log(`Group ${group} -> Cell ${cellIdx} = ${item.measured_voltage}`);
 						initArray[group][cellIdx].push(`${JSON.stringify({ voltage: item.measured_voltage, temperature: item.measured_temp, time: Math.round(item.date_part) })}`);
 					}
+
 					response.json({ "data": initArray })
 				} else {
 					console.log(err);
@@ -207,6 +211,7 @@ app.post('/getData', function (req, response) {
 				}
 			});
 		} else {
+			console.log("Unknow user");
 			res.end();
 		}
 	})
