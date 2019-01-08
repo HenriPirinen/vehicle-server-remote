@@ -11,6 +11,7 @@ const cookieParser = require('cookie-parser');
 const redis = require('redis');
 const https = require("https");
 const fs = require("fs");
+const crypto = require("crypto");
 
 const options = {
 	key: fs.readFileSync("/etc/letsencrypt/live/chl650.net/privkey.pem"),
@@ -142,7 +143,7 @@ app.post('/auth', function (req, res) {
 	
 	auth.query(query, [`${req.body.email}`, `${req.body.password}`],(err, response) => {
 		if (response.rows[0].exists) {
-			let authToken = Math.random().toString(36).slice(2);
+			let authToken = crypto.randomBytes(20).toString('hex');
 			redisClient.set(req.body.email, authToken);
 			redisClient.expire(req.body.email, 1800); //Expire token after half hour
 
