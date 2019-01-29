@@ -9,6 +9,7 @@ const nodemailer = require('nodemailer');
 const path = require('path');
 const cookieParser = require('cookie-parser');
 const redis = require('redis');
+const http = require("http");
 const https = require("https");
 const fs = require("fs");
 const crypto = require("crypto");
@@ -25,7 +26,7 @@ redisClient.on('connect', function () {
 	console.log('Redis client connected');
 })
 
-let transporter = nodemailer.createTransport({
+const transporter = nodemailer.createTransport({
 	service: 'gmail',
 	secure: false,
 	port: 25,
@@ -62,7 +63,7 @@ const auth = new pg.Pool({
 	port: keys.db.dbPort
 });
 
-var clientMQTT = mqtt.connect(keys.address.mqtt, keys.mqttOptions);
+const clientMQTT = mqtt.connect(keys.address.mqtt, keys.mqttOptions);
 
 clientMQTT.on('connect', () => {
 	clientMQTT.subscribe('vehicleData');
@@ -71,7 +72,6 @@ clientMQTT.on('connect', () => {
 
 clientMQTT.on('message', (topic, message) => {
 	if (topic !== 'vehicleExternalCommand') {
-		console.log('Recived data over MQTT');
 		let telemetry = JSON.parse(message.toString());
 		let cellID = 0;
 		let insertQuery = '';
@@ -100,37 +100,28 @@ clientMQTT.on('message', (topic, message) => {
 		}
 
 		pool.query(insertQuery, (err, res) => {
-			if (err) {
-				console.log(err);
-			};
+			if (err) console.log(err);
 		});
 	};
 });
 
-var app = express();
-/*var server = app.listen(80, () => { //Start server
-	console.log("Listening port 80 @ localhost");
-});*/
-
-var server = https.createServer(options, app).listen(443, () => {
-	console.log('Server started');
-});
-
+const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 app.use(cookieParser());
-
 app.use(express.static(__dirname, { dotfiles: 'allow' } ));
-
 app.use(function (req, res, next) {
 	res.header("Access-Control-Allow-Origin", "*");
 	res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
 	next();
 });
-
 app.use('/webApp/', express.static(path.join(__dirname, 'webApp')));
 app.get('/*', function (req, res) {
 	res.sendFile(path.join(__dirname, 'webApp', 'index.html'));
+});
+
+const serverHTTPS = https.createServer(options, app).listen(443, () => {
+	console.log('Listening port 443');
 });
 
 app.post('/auth', function (req, res) {
@@ -155,10 +146,8 @@ app.post('/auth', function (req, res) {
 });
 
 app.post('/getData', function (req, response) {
-	console.log('query');
 	redisClient.get(req.body.user, function (err, reply) {
-		if (reply === req.body.key) {
-			console.log('User OK');
+		if (reply === req.body.key) { //Check if key is valid
 			let query = () => {
 				let sqlQuery = `SELECT extract(epoch from me.clock), me.cell_id, vo.measured_voltage, te.measured_temp
 					FROM measurement me
@@ -212,8 +201,7 @@ app.post('/getData', function (req, response) {
 				}
 			});
 		} else {
-			console.log("Unknow user");
-			res.end();
+			res.end(); //Unknown user
 		}
 	})
 });
@@ -240,24 +228,10 @@ app.post('/update', function (req, res) {
 	})
 });
 
-var io = socket(server);
+var io = socket(serverHTTPS);
 io.on('connection', (socket) => {
 	//Possibly used in the future
 });
-
-var validateJSON = (string) => { //Validate JSON string
-	try {
-		JSON.parse(string);
-	} catch (e) {
-		console.log(e);
-		return false;
-	};
-	return true;
-};
-
-var uploadData = () => {
-	clientMQTT.publish('vehicleExternalCommand', '$commandFromRemote');
-};
 
 var analyse = (voltage, temperature) => {
 	let errorMsg = { 'voltage': null, 'temperature': null };
