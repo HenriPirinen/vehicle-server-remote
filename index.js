@@ -197,11 +197,11 @@ app.post('/getData', function (req, response) {
 					response.json({ "data": initArray })
 				} else {
 					console.log(err);
-					res.end();
+					response.end();
 				}
 			});
 		} else {
-			res.end(); //Unknown user
+			response.end(); //Unknown user
 		}
 	})
 });
